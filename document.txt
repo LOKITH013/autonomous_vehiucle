@@ -1,0 +1,942 @@
+ASTRA ADAS
+PROJECT IMPLEMENTATION AND CURRENT STATUS
+Generated: 2026-11-16
+Project location: C:\Users\lokit\astra_adas
+
+======================================================================
+1. PROJECT PURPOSE
+======================================================================
+
+Astra ADAS is a research prototype for video-based road-scene perception
+and driver-assistance telemetry, with emphasis on Indian Driving
+Conditions (IDD). It combines object detection, tracking, lane and traffic
+heuristics, approximate distance and motion estimates, time-to-collision
+(TTC), rule-based risk levels, and recommendation labels.
+
+The application does not control a vehicle. Its distance and TTC values
+are not calibrated measurements, and its recommendations are not validated
+driving commands. Do not use the prototype as a real-world safety system.
+
+======================================================================
+2. CURRENT IMPLEMENTATION SNAPSHOT
+======================================================================
+
+Implemented application paths:
+
+1. Offline video pipeline:
+   Reads a project video or user-provided video, runs the ADAS processing
+   pipeline, writes an annotated video, and records per-object metrics in
+   CSV format.
+
+2. Streamlit dashboard:
+   Primary dashboard for project video selection, file uploads, offline
+   pipeline settings, annotated frames/telemetry, and result downloads.
+   The sidebar provides direct Video Analysis and Live Camera navigation,
+   detection classes, benchmark metrics, system modules, and a refresh
+   control.
+
+3. Live Camera:
+   Uses streamlit-webrtc to request the user's camera in the browser. The
+   configured YOLO detector displays bounding boxes, class labels,
+   confidence values, and track IDs.
+   The current webcam path is object detection and overlay only. It
+   does not run lane detection, depth, traffic-light color analysis,
+   hazard-in-path checks, TTC, risk assessment, or decision logic. It does
+   not save webcam recordings or CSV metrics.
+
+4. Optional React + FastAPI dashboard:
+   An alternate implementation remains available in web/ and
+   src/dashboard/api.py. Streamlit is the primary dashboard platform.
+
+5. Evaluation and dataset utilities:
+   Contains an IDD-D detection benchmark, a metrics-reporting script,
+   dataset inspection utilities, training code, and unit/integration tests.
+
+Model checkpoint:
+   models/detection/best.pt exists (about 6.24 MB). Configuration names
+   15 IDD classes. A completed full M5 training run is still outstanding;
+   the README describes the current checkpoint as not evidence that the
+   planned training run completed.
+
+Current milestone summary:
+   - Object detection and baseline-vs-IDD benchmark code are present.
+   - Lane, signal, hazard, distance, TTC, risk, and decision components
+     exist, but several are heuristic or not fully validated.
+   - Offline pipeline and dashboard are usable.
+   - Browser webcam object detection is wired into the dashboard.
+   - Further training, calibration, labeled validation, and scenario
+     testing remain.
+
+======================================================================
+3. PROCESSING ARCHITECTURE
+======================================================================
+
+Offline video processing flow:
+
+Video frame
+  -> YOLO object detection and ByteTrack association
+  -> classical OpenCV lane detection
+  -> traffic-light/sign detection post-processing
+  -> optional MiDaS relative-depth estimate
+  -> fallback bounding-box distance proxy when depth is unavailable
+  -> per-track relative motion estimate
+  -> TTC calculation
+  -> geometric in-path hazard check
+  -> rule-based risk assessment
+  -> rule-based recommendation
+  -> annotated frame and per-object CSV record
+
+The dashboard's Live Camera path is a separate, smaller flow:
+
+Browser camera frame
+  -> existing YOLO detector and tracker
+  -> bounding boxes, class/confidence labels, and class summary
+  -> annotated frame returned to the browser over WebRTC
+
+======================================================================
+4. OBJECT CLASSES AND MODEL
+======================================================================
+
+The dataset configuration at IDDDetectionsYOLODataset/data.yaml lists 15
+classes:
+
+animal
+autorickshaw
+bicycle
+bus
+car
+caravan
+motorcycle
+person
+rider
+traffic light
+traffic sign
+trailer
+train
+truck
+vehicle fallback
+
+The detector implementation is in src/perception/detector.py. It uses
+Ultralytics YOLO, with the checkpoint and thresholds from config.yaml.
+Detection tracking uses Ultralytics ByteTrack. The detector also retains
+some low-confidence raw traffic-light/sign boxes and applies class-specific
+thresholds and short-term box association to them.
+
+The model is trained/configured for these road-scene classes; it is not a
+general-purpose detector for arbitrary household objects.
+
+Dataset split sizes documented by the project:
+   Train: 33,569 images
+   Validation: 4,196 images
+   Test: 4,197 images
+   Total: 41,962 images
+
+These are the IDD-D split counts recorded in the training/README
+documentation. The evaluator's full held-out test report confirms 4,197
+test images.
+
+======================================================================
+5. MODULE GUIDE
+======================================================================
+
+src/perception/detector.py
+   Loads the YOLO checkpoint, filters relevant classes, runs detection and
+   ByteTrack, and returns class, confidence, bounding box, and track ID.
+
+src/tracking/tracker.py
+   Contains a DeepSortTracker placeholder. The active application path uses
+   YOLO's ByteTrack integration instead.
+
+src/lane/lane_detector.py
+   Uses grayscale conversion, blur, Canny edges, a trapezoid region of
+   interest, and probabilistic Hough lines. Estimates lane position and
+   lateral deviation, smooths brief gaps, and draws lane overlays.
+
+src/traffic/traffic_detector.py
+   Uses YOLO traffic-light and traffic-sign boxes. It classifies light color
+   from the box crop with HSV thresholds as RED, YELLOW, GREEN, or UNKNOWN.
+   Signs are counted but their types are not classified.
+
+src/hazard/hazard_detector.py
+   Checks whether an object's bottom-center footprint falls between detected
+   lane boundaries. If lane lines are unavailable, it uses a configurable
+   central image corridor.
+
+src/depth/depth_estimator.py
+   Optionally runs MiDaS Small to produce a relative inverse-depth map. A
+   configured scale factor converts this into a rough distance estimate;
+   this scale is not camera-calibrated.
+
+src/motion/motion.py
+   Provides a bounding-box pinhole distance proxy and per-track motion
+   estimates. It reports closing-speed proxy and image-plane direction
+   (left/right/up/down); these are not world-coordinate measurements.
+
+src/ttc/ttc_calc.py
+   Computes TTC as distance divided by closing speed when there is enough
+   history and closing speed exceeds the configured minimum. Otherwise TTC
+   is missing or infinite.
+
+src/risk/risk_engine.py
+   Produces LOW, MEDIUM, or HIGH risk with explanatory reason strings using
+   configured TTC/distance cutoffs, traffic-light state, lane context, and
+   in-path status.
+
+src/decision/decision_engine.py
+   Produces STOP, AVOID OBSTACLE, BRAKE, SLOW DOWN, MONITOR, or
+   MAINTAIN SPEED and returns reasons. These are prototype recommendations.
+
+src/pipeline/pipeline.py
+   Integrates the detectors and decision modules for video, draws output,
+   reports processing progress, and writes per-object metrics.
+
+src/dashboard/app.py
+   Primary Streamlit UI for project video, uploads, Live Camera, sidebar
+   detection classes, benchmark metrics, and system modules.
+
+src/dashboard/api.py
+   FastAPI endpoints for health, video listing/serving, uploads, background
+   pipeline jobs, status checks, result downloads, and live-frame detection.
+
+src/dashboard/live_camera.py
+   Draws live-camera object boxes, labels, confidence, and a class summary
+   onto each webcam frame.
+
+web/src/App.jsx
+   React dashboard interface for video analysis, job status, results,
+   webcam capture, and detections.
+
+web/src/styles.css
+   Responsive dashboard theme and layouts.
+
+web/vite.config.js
+   Vite development server configuration and local API proxy.
+
+src/evaluation/benchmark_m4.py
+   Compares the COCO-pretrained baseline with the IDD checkpoint using
+   per-class AP@50, mAP@50, precision/recall/F1 at an operating threshold,
+   latency, and throughput. It can write charts and a report.
+
+src/evaluation/evaluate.py
+   Reads pipeline metrics CSV and creates risk/action/class charts and an
+   experimental summary report.
+
+scripts/inspect_idd.py
+   Inspects raw IDD files for image/annotation counts, matching filenames,
+   duplicate samples, unreadable images, and sample annotation structure.
+
+scripts/train_improved.py
+   Training entry point for the planned YOLOv8s IDD-D training run. The
+   script defaults to 50 epochs and 960-pixel input and accepts training
+   arguments such as batch size, workers, device, and dataset YAML path.
+
+scripts/astra_m5_colab_training.ipynb
+scripts/astra_m5_kaggle_training.ipynb
+   Notebook alternatives for GPU-hosted training.
+
+======================================================================
+6. CONFIGURATION HIGHLIGHTS
+======================================================================
+
+Main configuration: config.yaml
+Optional local/manual configuration: config.manual.yaml
+
+Current config.yaml highlights:
+
+Detection:
+   Weights: models/detection/best.pt
+   Inference image size: 640
+   General confidence threshold: 0.22
+   IoU threshold: 0.55
+   Tracking confidence: 0.01
+   Traffic-light confidence threshold: 0.03
+   Traffic-sign confidence threshold: 0.05
+
+Lane:
+   Processing width: 640 pixels
+   Maximum retained missing frames: 3
+   Canny thresholds: 50 and 150
+   Hough threshold: 20
+   Region-of-interest top fraction: 0.58
+
+Traffic-light color analysis:
+   Minimum color confidence: 0.10
+   Minimum box area: 50 pixels
+   Minimum color pixel fraction: 0.005
+   Minimum color dominance: 0.55
+
+Motion and distance:
+   Image-motion deadband: 5 pixels/second
+   Bounding-box distance proxy focal length: 700 pixels
+   Class widths are heuristic values in config.yaml and require camera
+   calibration before being treated as metric.
+
+Optional depth:
+   MiDaS is disabled by default to avoid substantial per-frame latency.
+   Configured scale factor: 5000.0; it is not calibrated.
+
+TTC and risk:
+   Minimum closing speed for finite TTC: 0.2 m/s
+   High-risk TTC cutoff: 2.0 seconds
+   Medium-risk TTC cutoff: 4.0 seconds
+   High-risk distance cutoff: 5.0 meters (proxy)
+   Medium-risk distance cutoff: 12.0 meters (proxy)
+
+Decision:
+   Brake TTC cutoff: 1.5 seconds
+   Slow-down TTC cutoff: 3.0 seconds
+
+All of these are prototype parameters, not universal safety thresholds.
+config.manual.yaml changes the pipeline output paths for manual testing.
+
+Rule order used by the current decision engine:
+   1. A RED traffic-light state returns STOP.
+   2. An obstacle classified in the path returns AVOID OBSTACLE.
+   3. TTC below 1.5 seconds returns BRAKE.
+   4. TTC below 3.0 seconds returns SLOW DOWN.
+   5. Otherwise, HIGH risk returns SLOW DOWN and MEDIUM risk returns
+      MONITOR.
+   6. If none of those conditions apply, the result is MAINTAIN SPEED.
+
+Risk is evaluated separately: a RED light immediately produces HIGH risk;
+in-path TTC below 2.0 seconds is HIGH, below 4.0 seconds is MEDIUM; and an
+in-path distance proxy below 5.0 or 12.0 meters produces HIGH or MEDIUM
+risk respectively. A vulnerable road user at MEDIUM risk is promoted to
+HIGH. The decision engine's ordering means an in-path obstacle label can
+take precedence over the TTC action. These are code rules, not validated
+operational advice.
+
+======================================================================
+7. INSTALLATION AND RUNNING ON WINDOWS
+======================================================================
+
+Open PowerShell in:
+   C:\Users\lokit\astra_adas
+
+Create and activate a virtual environment if needed:
+
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+
+The Python requirements include Ultralytics, OpenCV, NumPy, pandas,
+matplotlib, Streamlit, streamlit-webrtc, FastAPI, Uvicorn, PyYAML, and timm.
+The optional React frontend uses Node.js/npm and the manifest in web/package.json.
+A GPU is optional for inference; GPU-hosted training is recommended for
+the planned full training run.
+
+Start the primary Streamlit dashboard:
+
+   .\venv\Scripts\python.exe -m streamlit run src/dashboard/app.py --server.port 8501
+
+Open http://localhost:8501/. Use the sidebar's Dashboard selector to
+switch between Video Analysis and Live Camera. The sidebar also shows all
+configured detection classes, saved IDD-D benchmark values, system modules,
+and a refresh button.
+
+The optional React/FastAPI implementation can still be run separately:
+
+   .\venv\Scripts\python.exe -m uvicorn src.dashboard.api:app --host 127.0.0.1 --port 8000
+   Set-Location web
+   npm install
+   npm run dev
+
+Dashboard usage:
+   - Choose "Use Existing Project Video" to select an MP4 in
+     outputs/videos/.
+   - Choose "Upload New Video" to upload an MP4, AVI, or MOV file.
+   - Choose "Live Camera", press the WebRTC Start control, and allow camera
+     permission in the browser.
+   - The confidence slider configures detection confidence.
+   - The MiDaS and max-frame controls apply to offline video processing.
+
+Run the offline pipeline:
+
+   python -m src.pipeline.pipeline --config config.yaml --video outputs/videos/test_data_1.mp4 --headless --max-frames 300
+
+The pipeline CLI also supports --output, --log-interval, and --max-frames.
+Without an explicit input video, it uses pipeline.input_video from config.
+
+Inspect a raw IDD dataset:
+
+   python scripts/inspect_idd.py --root data/idd/raw
+
+Run the detector benchmark on the held-out test split:
+
+   python -m src.evaluation.benchmark_m4 --num-images all --split test
+
+Run M15 charts/report from pipeline metrics:
+
+   python -m src.evaluation.evaluate
+
+======================================================================
+8. OUTPUTS AND METRICS
+======================================================================
+
+Default pipeline outputs from config.yaml:
+   outputs/videos/annotated_output.mp4
+   outputs/metrics/run_metrics.csv
+
+The dashboard stores video-run outputs in:
+   outputs/dashboard_runs/<video>_<timestamp>/
+
+The output MP4 contains drawn object, lane, signal, depth (when enabled),
+and risk/action overlays as applicable. Per-object CSV rows include fields
+such as:
+   frame, track_id, class, confidence, distance proxy, closing-speed proxy,
+   image-plane velocity and direction, TTC, risk, action, reasons,
+   lane-position/deviation, traffic-light state/count/details, and
+   traffic-sign count.
+
+The repository currently contains generated videos, metrics, and evaluation
+reports under outputs/. These are artifacts from prior local runs and are
+not the same as a complete validation of the system.
+
+======================================================================
+9. EVALUATION STATUS
+======================================================================
+
+Held-out IDD-D test report:
+   File: outputs/evaluation/m4_benchmark_test/m4_benchmark_report.md
+   Images: 4,197 of 4,197
+   Hardware: CPU, 16 logical threads
+   Overall mAP@50: COCO baseline 0.127; IDD checkpoint 0.371
+   Indian-specific mAP@50: baseline 0.010; IDD checkpoint 0.284
+   IDD checkpoint mean latency: 29.0 ms/image
+   IDD checkpoint throughput: 34.5 detector FPS
+
+Resolution experiment reports:
+   outputs/evaluation/m4_resolution_640/m4_benchmark_report.md
+   outputs/evaluation/m4_resolution_960/m4_benchmark_report.md
+
+These are validation split reports over 200 sampled images, not full-split
+or held-out test results:
+   640 px: IDD checkpoint mAP@50 0.504; 34.3 ms/image; 29.2 detector FPS
+   960 px: IDD checkpoint mAP@50 0.560; 65.4 ms/image; 15.3 detector FPS
+
+Detector benchmark speed is not end-to-end dashboard throughput. Rare
+classes and traffic signals/signs remain weak; the test report records
+low recall for animal, traffic light, traffic sign, and vehicle fallback.
+Detection metrics do not measure distance/TTC quality, tracking accuracy,
+or road safety.
+
+======================================================================
+10. TESTS
+======================================================================
+
+Focused live-camera overlay tests:
+
+   python -m unittest tests.test_live_camera -v
+
+Detector, lane, traffic, and motion tests:
+
+   python -m unittest tests.test_traffic_motion -v
+
+Benchmark metric calculation tests:
+
+   python -m unittest tests.test_benchmark_m4 -v
+
+End-to-end ADAS suite:
+
+   python -m unittest tests.test_adas_suite -v
+
+The end-to-end suite expects the configured detector weights and
+outputs/videos/test_data_1.mp4. It runs real inference and may take longer
+than the focused unit tests.
+
+Latest live-camera code verification:
+   - 2 overlay unit tests passed.
+   - Python syntax compilation passed for the dashboard, camera helper,
+     and camera tests.
+   - Streamlit serves the dashboard on port 8501.
+   - The Streamlit AppTest harness cannot create the real WebRTC session
+     needed to verify camera permission and live browser frames.
+
+======================================================================
+11. CURRENT LIMITATIONS AND WORK REMAINING
+======================================================================
+
+1. Complete M5 training:
+   The YOLOv8s training script and Colab/Kaggle notebooks exist, but a
+   completed training run remains outstanding. The current best.pt file
+   alone does not establish that the planned full run completed.
+
+2. Validate object detection:
+   Improve weak/rare-class recall and evaluate the final selected model on
+   the held-out test set after model selection.
+
+3. Improve lane and traffic understanding:
+   Lane detection is classical Canny/Hough geometry. Traffic-light colors
+   come from HSV heuristics and are not associated with the ego lane.
+   Traffic-sign types are not classified. Labeled validation across
+   lighting and weather conditions is still needed.
+
+4. Calibrate distance and TTC:
+   The bounding-box distance proxy is not calibrated. MiDaS produces
+   relative depth and its scale factor is not camera-calibrated. TTC is
+   dependent on these estimates and is not validated.
+
+5. Validate tracking and risk:
+   Tracking metrics such as MOTA/IDF1 and labeled TTC/risk accuracy require
+   ground-truth scenarios. CSV outputs alone do not prove accuracy.
+
+6. Extend live camera processing:
+   The webcam feature currently reports object detections only. It does not
+   yet execute the complete ADAS pipeline on live camera frames or save
+   webcam-run metrics.
+
+7. Other inputs and safety:
+   CARLA and other live-stream sources are not wired in. The application
+   does not control a vehicle, and there is no certified safety guarantee.
+
+======================================================================
+12. REPOSITORY MAP
+======================================================================
+
+README.md                         Project quick-start and milestone notes
+document.txt                      This implementation/status document
+config.yaml                       Main pipeline and model parameters
+config.manual.yaml                Optional manual-run configuration
+requirements.txt                  Python package dependencies
+web/                              React/Vite dashboard frontend
+models/detection/best.pt           Configured IDD detector checkpoint
+IDDDetectionsYOLODataset/data.yaml 15-class YOLO dataset configuration
+src/                               Processing, dashboard, and evaluation code
+scripts/                           Dataset inspection and training tools
+tests/                             Unit, benchmark, and end-to-end tests
+outputs/videos/                   Sample and generated video files
+outputs/metrics/                  Generated per-object metrics CSV files
+outputs/evaluation/               Reports and charts
+runs/detect/                       YOLO training-run artifacts
+
+======================================================================
+13. WHAT THE MEASURED METRICS MEAN
+======================================================================
+
+The detector benchmark uses labeled IDD-D images and compares predicted
+boxes to ground-truth boxes:
+
+AP@50:
+   Area under the precision-recall curve for one class, matching a
+   prediction to a ground-truth box at Intersection-over-Union (IoU) >=
+   0.50. It summarizes detector ranking across confidence values.
+
+mAP@50:
+   Mean of the AP@50 values for classes that have ground-truth objects in
+   that split. This is a detection metric, not a measure of safe driving.
+
+Precision:
+   At the selected operating confidence threshold, the fraction of
+   predictions that match a labeled object. Higher precision means fewer
+   false positive detections.
+
+Recall:
+   At the selected operating confidence threshold, the fraction of labeled
+   objects that the detector found. Low recall means missed objects.
+
+F1:
+   Harmonic mean of precision and recall at the operating threshold.
+
+IoU:
+   Intersection area divided by union area for predicted and labeled boxes.
+   The benchmark treats a match as correct at IoU >= 0.50.
+
+Latency and FPS:
+   Mean detector inference time per image and corresponding throughput.
+   These figures do not include the full lane/depth/risk dashboard pipeline,
+   browser transport, or camera permission/startup time.
+
+======================================================================
+14. FULL HELD-OUT TEST METRICS BY CLASS
+======================================================================
+
+Source:
+   outputs/evaluation/m4_benchmark_test/m4_benchmark_report.md
+   IDD-D test images: 4,197 / 4,197
+   AP confidence floor: 0.001
+   IoU match threshold: 0.50
+   AP integration: 101-point interpolation
+   Precision/recall/F1 confidence threshold: 0.25
+
+The table below gives ground-truth object counts, baseline and IDD
+checkpoint AP@50, plus IDD checkpoint precision, recall, and F1:
+
+Class                 GT     COCO AP50   IDD AP50   IDD P     IDD R     IDD F1
+animal                611       0.059      0.163     0.575     0.113     0.189
+autorickshaw         3364       0.000      0.657     0.788     0.592     0.676
+bicycle               290       0.125      0.317     0.654     0.307     0.418
+bus                  1942       0.367      0.659     0.807     0.592     0.683
+car                  9313       0.491      0.628     0.803     0.551     0.654
+caravan                  9       0.000      0.230     0.000     0.000     0.000
+motorcycle          10049       0.342      0.629     0.771     0.571     0.656
+person               8411       0.175      0.449     0.730     0.374     0.494
+rider                9428       0.000      0.545     0.770     0.471     0.584
+traffic light         356       0.045      0.254     0.573     0.230     0.329
+traffic sign         1480       0.039      0.305     0.556     0.290     0.381
+trailer                  3       0.000      0.000     0.000     0.000     0.000
+train                    6       0.000      0.000     0.000     0.000     0.000
+truck                 2795       0.258      0.624     0.759     0.554     0.641
+vehicle fallback      2148       0.000      0.109     0.631     0.086     0.152
+
+Aggregate test results from the report:
+
+Metric                                  COCO baseline    IDD checkpoint
+Overall mAP@50                              0.127             0.371
+Indian-specific classes mAP@50              0.010             0.284
+Standard shared classes mAP@50               0.205             0.429
+Mean inference latency                     30.7 ms           29.0 ms
+Detector throughput                        32.5 FPS          34.5 FPS
+
+The benchmark report gives an overall absolute mAP@50 improvement of
+0.245 (+193.1% relative gain). Values are rounded in the report. Classes
+with very few examples, including caravan, trailer, and train, have
+unstable or zero operating metrics. Traffic-light, traffic-sign, animal,
+and vehicle-fallback recall are weak and require further work.
+
+======================================================================
+15. RESOLUTION EXPERIMENT AND PIPELINE RUN METRICS
+======================================================================
+
+Resolution experiment:
+   Source: outputs/evaluation/m4_resolution_640/ and
+           outputs/evaluation/m4_resolution_960/
+   Split: IDD-D validation, 200 sampled images out of 4,196
+   Hardware: CPU, 16 logical threads
+
+Metric                                  640 px            960 px
+IDD checkpoint mAP@50                    0.504             0.560
+Indian-specific mAP@50                   0.487             0.519
+Standard shared classes mAP@50           0.515             0.586
+Mean detector latency                   34.3 ms           65.4 ms
+Detector throughput                     29.2 FPS          15.3 FPS
+
+In this sampled validation experiment, 960-pixel inference improved
+mAP@50 by about 0.056 compared with 640 pixels, while roughly doubling
+detector latency and reducing throughput. These results are for the
+sampled validation subset; they are not the full test-set result and do
+not measure end-to-end video processing.
+
+Earlier 100-image validation report:
+   Source: outputs/evaluation/m4_benchmark/m4_benchmark_report.md
+   Split: IDD-D validation, 100 images out of 4,196
+   Overall mAP@50: COCO baseline 0.108; IDD checkpoint 0.315
+   Indian-specific mAP@50: baseline 0.008; IDD checkpoint 0.241
+   Standard shared classes mAP@50: baseline 0.174; IDD checkpoint 0.365
+   Mean inference latency: baseline 87.2 ms; IDD checkpoint 53.5 ms
+   Detector throughput: baseline 11.5 FPS; IDD checkpoint 18.7 FPS
+
+This earlier 100-image result is a separate sample/report and should not be
+compared as if it were the same evaluation as the later 200-image
+640/960-pixel experiment or the full test split.
+
+Saved M15 pipeline report:
+   Source: outputs/evaluation/evaluation_report.md
+   Frames analyzed: 250
+   Object records: 1,806
+   Average records per frame: 7.2
+   Top recorded classes: car 1,720; bus 57; truck 11
+   Risk records: LOW 1,659 (91.9%); MEDIUM 86 (4.8%);
+                 HIGH 61 (3.4%)
+   Recorded BRAKE recommendations: 30
+   Recorded SLOW DOWN recommendations: 55
+   Most frequent lane-position report: RIGHT (140 frames)
+   Traffic-light report: UNKNOWN in all 250 frames
+
+This M15 summary describes one saved pipeline run. The object counts,
+risk labels, lane positions, and actions are outputs of the current
+prototype, not ground-truth accuracy measurements. They should not be
+interpreted as proof that the risk logic is correct.
+
+======================================================================
+16. HOW THE IMPLEMENTED SYSTEM HELPS
+======================================================================
+
+Research and development:
+   The project turns a video into visible, inspectable intermediate outputs:
+   detected classes and boxes, track IDs, lane estimates, light-color
+   estimates, risk levels, action labels, and reason strings. This makes it
+   easier to inspect model behavior frame by frame and identify cases that
+   need better data, calibration, or logic.
+
+Indian road-scene coverage:
+   The IDD class list explicitly includes autorickshaws, riders, animals,
+   and vehicle-fallback objects in addition to cars, buses, people, and
+   other common classes. The test benchmark shows a higher aggregate
+   mAP@50 for the IDD checkpoint than the COCO baseline on the reported
+   IDD-D split. This supports further research on domain-specific
+   perception, while low-recall classes remain visible areas for improvement.
+
+Contextual prioritization:
+   Tracking links detections across adjacent frames. Lane geometry and the
+   central-corridor fallback help identify objects that may occupy the
+   projected path, rather than treating every visible object equally.
+   TTC and rule-based risk/action labels provide a consistent way to
+   organize candidate events for review.
+
+Explainability:
+   Risk and decision functions return reason text such as threshold
+   crossings or an obstacle-in-path condition. Researchers can inspect why
+   a label was produced instead of seeing only an unexplained score.
+
+Operator visualization:
+   The dashboard lets a user test existing clips, upload a clip, or point
+   the browser at a laptop webcam. The live view is useful for a local
+   demonstration of the detector and for observing its class labels and
+   confidence values; it is not a validated on-road deployment.
+
+Reproducible experiments:
+   Per-frame/per-object CSV files and annotated videos preserve pipeline
+   outputs for later analysis. The M4 evaluator compares detector
+   checkpoints and inference resolutions, while the M15 evaluator summarizes
+   risk/action/class distributions. This helps track changes between
+   model/configuration runs and identify where further tests are needed.
+
+Dataset and training workflow:
+   The dataset inspector helps discover missing image/annotation pairs,
+   duplicate samples, unreadable files, and annotation formats before
+   conversion or training. The training scripts/notebooks provide a path
+   toward completing the planned GPU training milestone.
+
+These are development and research benefits. No measured result in this
+document demonstrates reduced collisions, safe driving, calibrated
+distances, or validated real-time performance in a vehicle.
+
+======================================================================
+17. IMPLEMENTATION STATUS BY MILESTONE
+======================================================================
+
+M2 - Dataset inspection:
+   Implemented script for inspecting raw dataset files. Confirm the
+   annotation format before writing any conversion logic.
+
+M3/M4 - Detection and evaluation:
+   YOLO detector, IDD class filtering, ByteTrack integration, COCO-vs-IDD
+   benchmark, test report, and resolution experiments are present.
+
+M5 - IDD model training:
+   Training script and Colab/Kaggle notebooks are present. The planned
+   completed training run remains outstanding.
+
+M6 - Traffic signals/signs:
+   YOLO presence detection and HSV traffic-light color heuristic are
+   implemented. Sign subtype classification and ego-lane signal association
+   are not implemented.
+
+M7 - Hazard corridor:
+   Lane-based or center-corridor in-path rule is implemented. Dedicated
+   pothole/debris/construction detection is not implemented.
+
+M8 - Tracking:
+   Active detector path uses ByteTrack. DeepSORT code is a placeholder.
+
+M9 - Distance/depth:
+   Optional MiDaS and bounding-box proxy paths exist. Neither is currently
+   camera-calibrated/validated as a metric distance source.
+
+M10 - TTC:
+   TTC formula and configured minimum closing speed are implemented.
+   Validation against measured distance and labeled motion scenarios is
+   still required.
+
+M11/M12 - Risk and recommendations:
+   Explainable rule-based risk and recommendation labels are implemented;
+   they are not a validated driving policy.
+
+M13 - End-to-end pipeline:
+   Offline video processing, output video, telemetry, and CSV logging are
+   implemented.
+
+M14 - Dashboard:
+   Streamlit video/upload analysis and browser webcam object detection are
+   implemented. Webcam input is detection/overlay only; full ADAS processing
+   and metrics logging are not wired to camera frames. React/FastAPI remains
+   an optional alternate implementation.
+
+M15 - Experimental evaluation:
+   Detector benchmark and metrics-reporting scripts/reports are present.
+   Broad scenario-level evaluation with ground truth is still needed.
+
+======================================================================
+18. WHAT IS WORKING NOW
+======================================================================
+
+Working application functions:
+
+- The primary Streamlit dashboard runs from src/dashboard/app.py.
+- The dashboard can select project videos or accept an uploaded MP4, AVI,
+  or MOV file.
+- Offline video processing runs the configured detector/tracker and the
+  lane, traffic, hazard, distance, TTC, risk, and decision components.
+- The offline dashboard displays annotated frames and telemetry while it
+  processes the video, then saves an annotated MP4 and per-object CSV.
+- Live Camera uses browser WebRTC camera access. The current live path
+  displays YOLO classes, confidence, bounding boxes, and track IDs.
+- The detector benchmark, dataset inspector, training entry points,
+  evaluation reports, and focused unit tests are present.
+
+Verification performed for the recent Live Camera addition:
+
+- The React production build and focused FastAPI/live-camera tests passed
+  for the optional alternate implementation.
+- Live camera depends on user-granted browser camera permission. Actual
+  physical-camera frames have not been verified in this environment.
+
+The Live Camera option is currently a working detection demonstration, not
+the full offline ADAS pipeline. It does not yet show lane, depth, traffic,
+TTC, risk, or action telemetry for webcam frames and does not save webcam
+video/CSV results.
+
+======================================================================
+19. COPY-READY DASHBOARD COMMANDS (WINDOWS POWERSHELL)
+======================================================================
+
+Open PowerShell and change to the project root:
+
+   Set-Location C:\Users\lokit\astra_adas
+
+If dependencies have not yet been installed:
+
+   .\venv\Scripts\python.exe -m pip install -r requirements.txt
+
+Start the Streamlit dashboard:
+
+   .\venv\Scripts\python.exe -m streamlit run src/dashboard/app.py --server.port 8501
+
+Open:
+
+   http://localhost:8501/
+
+Optional React/FastAPI development dashboard:
+
+   .\venv\Scripts\python.exe -m uvicorn src.dashboard.api:app --host 127.0.0.1 --port 8000
+   Set-Location web
+   npm install
+   npm run dev
+
+To use the webcam:
+
+1. Select "Live Camera" from the Streamlit sidebar's Dashboard selector.
+2. Click the WebRTC Start control.
+3. Allow camera access when the browser asks for permission.
+4. Point the camera at road users that belong to the configured IDD classes.
+5. Read the class, confidence, track ID, and bounding-box overlays in the
+   live view.
+
+To stop the dashboard, focus its PowerShell terminal and press Ctrl+C.
+
+======================================================================
+20. FUTURE SCOPE AND RECOMMENDED ORDER
+======================================================================
+
+Priority 1 - Complete and validate the model training:
+   Run the planned YOLOv8s IDD-D training on a GPU using
+   scripts/train_improved.py or one of the Colab/Kaggle notebooks. Compare
+   checkpoints on validation data, choose a model, and then run the
+   full held-out test benchmark. Keep the test split out of training and
+   model selection.
+
+Priority 2 - Run the full ADAS pipeline on live camera frames:
+   Add lane detection, traffic-light/sign processing, hazard checks, motion,
+   TTC, risk, and decision telemetry to the webcam callback. Add a way to
+   save a webcam session as an annotated video and CSV, with explicit start,
+   stop, and error state handling.
+
+Priority 3 - Calibrate metric estimates:
+   Calibrate the camera and distance geometry or use suitable metric-depth
+   ground truth. Rework and validate the distance proxy/MiDaS scale, then
+   measure closing-speed and TTC error against labeled scenarios before
+   presenting those values as physical measurements.
+
+Priority 4 - Improve and validate road understanding:
+   Evaluate lane position and lane boundaries against labeled images.
+   Validate traffic-light color under day/night/rain/occlusion and associate
+   signals with the ego lane. Add a labeled dataset/model if traffic-sign
+   subtype recognition or hazards such as debris and potholes are required.
+
+Priority 5 - Build scenario-level evaluation:
+   Test across multiple videos and varied roads, weather, lighting, and
+   traffic density. Report per-class detection metrics and suitable tracking
+   metrics such as MOTA/IDF1. Validate risk and decision labels against
+   ground-truth events, and report false positives and missed hazards.
+
+Priority 6 - Improve live runtime and operator feedback:
+   Measure end-to-end webcam FPS/latency on target hardware, expose stream
+   errors and inference status, and verify browser permissions and camera
+   behavior across supported browsers. Provide an operator feedback/event
+   review workflow only if those records can be stored and evaluated safely.
+
+Priority 7 - Add other input sources:
+   Consider recorded camera devices, RTSP/network streams, or CARLA only
+   after the local webcam path and source lifecycle are reliable.
+
+All future work remains research/prototype work until validated. The system
+must not be connected to vehicle controls or described as safety-certified
+without the required engineering, ground-truth validation, and review.
+
+======================================================================
+21. USE CASES
+======================================================================
+
+Use case 1 - Demonstrate road-user detection:
+   Select Live Camera, allow browser camera permission, and show how the
+   configured IDD detector labels visible road users such as cars, buses,
+   people, riders, or autorickshaws. Use this as a local visual demo of
+   object detection only; the webcam path does not currently run the full
+   ADAS logic.
+
+Use case 2 - Review a recorded road video:
+   Select a project MP4 or upload a road clip. Run the offline pipeline to
+   inspect object tracks, lane estimates, traffic-light/sign telemetry,
+   in-path labels, approximate TTC/risk, and recommendation reasons frame
+   by frame. Use the annotated MP4 to review scenes and the CSV to filter
+   individual object records.
+
+Use case 3 - Compare detection checkpoints:
+   Run the M4 benchmark against labeled IDD-D validation/test images to
+   compare AP/mAP, precision, recall, F1, latency, and throughput. Use
+   validation results for model selection and reserve the test split for
+   final evaluation.
+
+Use case 4 - Compare inference resolutions:
+   Use the 640-pixel and 960-pixel benchmark configurations to examine the
+   trade-off between detector accuracy and latency on the same sampled
+   validation subset. Do not equate detector FPS with end-to-end video or
+   webcam FPS.
+
+Use case 5 - Inspect dataset readiness:
+   Run scripts/inspect_idd.py against the raw dataset to identify missing
+   image/annotation pairs, duplicate samples, unreadable images, and
+   annotation formats before converting data or starting training.
+
+Use case 6 - Explore prototype risk outputs:
+   Review logged risk levels, action labels, and reason strings to identify
+   scenes for follow-up analysis. Confirm these outputs against labeled
+   ground truth; do not treat them as proven warnings or driving advice.
+
+======================================================================
+22. CONCLUSION
+======================================================================
+
+Astra ADAS currently provides an end-to-end research workflow: it can
+process recorded road video, run configured IDD object detection and
+tracking, combine detections with lane/traffic/hazard heuristics, estimate
+relative motion and TTC, produce explainable rule-based risk/action labels,
+and export annotated video and CSV records. The primary Streamlit dashboard
+supports existing videos and uploads, and its Live Camera option provides
+a browser-based object-detection demonstration.
+
+The measured IDD checkpoint has higher reported detection mAP@50 than the
+COCO baseline on the saved IDD-D test report (0.371 versus 0.127). The
+640/960 validation experiment also shows an accuracy/latency trade-off.
+These results support continued domain-specific research; they do not
+validate the full ADAS pipeline, metric distance/TTC, real-time end-to-end
+performance, or safety.
+
+The next major steps are to complete the planned GPU training run, validate
+the selected checkpoint, calibrate and measure distance/TTC, improve and
+validate lane/traffic understanding, run labeled scenario-level tests,
+and then extend the live-camera path to the full pipeline with appropriate
+logging. Until those steps are complete, use the project for development,
+demonstration, and offline research analysis only.
+
+END OF DOCUMENT

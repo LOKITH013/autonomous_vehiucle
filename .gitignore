@@ -1,0 +1,30 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Large Datasets & Annotations
+IDDDetectionsYOLODataset/
+data/idd/raw/
+
+# Model checkpoints (provide weights locally)
+*.pt
+
+# Generated pipeline outputs
+outputs/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# JavaScript dependencies and build output
+node_modules/
+web/dist/
+
+# Ultralytics runs cache
+runs/
+.cache/
